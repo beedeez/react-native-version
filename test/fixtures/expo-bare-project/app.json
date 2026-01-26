@@ -1,0 +1,15 @@
+{
+  "displayName": "AwesomeProject",
+  "name": "AwesomeProject",
+  "expo": {
+    "name": "AwesomeProject",
+    "slug": "awesomeproject",
+    "version": "1.0.0",
+    "ios": {
+      "buildNumber": "1"
+    },
+    "android": {
+      "versionCode": 1
+    }
+  }
+}

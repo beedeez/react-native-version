@@ -18,7 +18,8 @@
   },
   "scripts": {
     "docs": "./docs.sh",
-    "test": "./test.sh"
+    "test": "./test.sh",
+    "test:expo-bare-native": "ava test/expoAndBareNative.js"
   },
   "dependencies": {
     "chalk": "^4.1.0",
@@ -70,5 +71,6 @@
     "version",
     "versionCode",
     "versionName"
-  ]
+  ],
+  "packageManager": "pnpm@9.0.0"
 }
