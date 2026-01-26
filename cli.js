@@ -32,6 +32,10 @@ program
 		"-L, --legacy",
 		"Version iOS using agvtool (macOS only). Requires Xcode Command Line Tools."
 	)
+	.option(
+		"--expo-and-bare-native",
+		"When Expo is detected, also update native Android/iOS files."
+	)
 	.option("-q, --quiet", "Be quiet, only report errors.")
 	.option(
 		"-r, --reset-build",

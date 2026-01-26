@@ -67,6 +67,7 @@ $ react-native-version
     -d, --android [path]         Path to your "android/app/build.gradle" file. (default: "android/app/build.gradle")
     -i, --ios [path]             Path to your "ios/" folder. (default: "ios")
     -L, --legacy                 Version iOS using agvtool (macOS only). Requires Xcode Command Line Tools.
+    --expo-and-bare-native       When Expo is detected, also update native Android/iOS files.
     -q, --quiet                  Be quiet, only report errors.
     -r, --reset-build            Reset build number back to "1" (iOS only). Unlike Android's "versionCode", iOS doesn't require you to bump the "CFBundleVersion", as long as "CFBundleShortVersionString" changes. To make it consistent across platforms, react-native-version bumps both by default. You can use this option if you prefer to keep the build number value at "1" after every version change. If you then need to push another build under the same version, you can use "-bt ios" to increment.
     -s, --set-build <number>     Set a build number. WARNING: Watch out when setting high values. This option follows Android's app versioning specifics - the value has to be an integer and cannot be greater than 2100000000. You cannot decrement this value after publishing to Google Play! More info at: https://developer.android.com/studio/publish/versioning.html#appversioning
@@ -85,6 +86,14 @@ You can apply these options to the "version" or "postversion" script too. If for
 +   "postversion": "react-native-version --never-amend"
   }
 }
+```
+
+## Expo + native in one run
+
+If you want an Expo project to update both `app.json` and the native Android/iOS files in the same run, use `--expo-and-bare-native`:
+
+```bash
+$ react-native-version --expo-and-bare-native
 ```
 
 ## Targeting platforms

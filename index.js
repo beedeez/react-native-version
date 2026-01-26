@@ -184,13 +184,15 @@ function version(program, projectPath) {
 	var appJSON;
 	const appJSONPath = path.join(projPath, "app.json");
 	const isExpoApp = isExpoProject(projPath);
+	const updateExpo = isExpoApp;
+	const updateNative = !isExpoApp || programOpts.expoAndBareNative;
 
 	isExpoApp && log({ text: "Expo detected" }, programOpts.quiet);
 
 	try {
 		appJSON = require(appJSONPath);
 
-		if (isExpoApp && !programOpts.incrementBuild) {
+		if (updateExpo && !programOpts.incrementBuild) {
 			appJSON = Object.assign({}, appJSON, {
 				expo: Object.assign({}, appJSON.expo, {
 					version: appPkg.version
@@ -208,10 +210,10 @@ function version(program, projectPath) {
 
 			var gradleFile;
 
-			try {
-				gradleFile = fs.readFileSync(programOpts.android, "utf8");
-			} catch (err) {
-				isExpoApp ||
+			if (updateNative) {
+				try {
+					gradleFile = fs.readFileSync(programOpts.android, "utf8");
+				} catch (err) {
 					reject([
 						{
 							style: "red",
@@ -222,17 +224,18 @@ function version(program, projectPath) {
 							text: 'Use the "--android" option to specify the path manually'
 						}
 					]);
-			}
+				}
 
-			if (!programOpts.incrementBuild && !isExpoApp) {
-				gradleFile = gradleFile.replace(
-					/versionName (["'])(.*)["']/,
-					"versionName $1" + appPkg.version + "$1"
-				);
+				if (!programOpts.incrementBuild) {
+					gradleFile = gradleFile.replace(
+						/versionName (["'])(.*)["']/,
+						"versionName $1" + appPkg.version + "$1"
+					);
+				}
 			}
 
 			if (!programOpts.neverIncrementBuild) {
-				if (isExpoApp) {
+				if (updateExpo) {
 					const versionCode = dottie.get(appJSON, "expo.android.versionCode");
 
 					appJSON = Object.assign({}, appJSON, {
@@ -246,7 +249,9 @@ function version(program, projectPath) {
 							})
 						})
 					});
-				} else {
+				}
+
+				if (updateNative) {
 					gradleFile = gradleFile.replace(/versionCode (\d+)/, function(
 						match,
 						cg1
@@ -262,9 +267,11 @@ function version(program, projectPath) {
 				}
 			}
 
-			if (isExpoApp) {
+			if (updateExpo) {
 				fs.writeFileSync(appJSONPath, JSON.stringify(appJSON, null, 2));
-			} else {
+			}
+
+			if (updateNative) {
 				fs.writeFileSync(programOpts.android, gradleFile);
 			}
 
@@ -277,7 +284,7 @@ function version(program, projectPath) {
 		ios = new Promise(function(resolve, reject) {
 			log({ text: "Versioning iOS..." }, programOpts.quiet);
 
-			if (isExpoApp) {
+			if (updateExpo) {
 				if (!programOpts.neverIncrementBuild) {
 					const buildNumber = dottie.get(appJSON, "expo.ios.buildNumber");
 
@@ -296,7 +303,15 @@ function version(program, projectPath) {
 				}
 
 				fs.writeFileSync(appJSONPath, JSON.stringify(appJSON, null, 2));
-			} else if (program.legacy) {
+			}
+
+			if (!updateNative) {
+				log({ text: "iOS updated" }, programOpts.quiet);
+				resolve();
+				return;
+			}
+
+			if (program.legacy) {
 				try {
 					child.execSync("xcode-select --print-path", {
 						stdio: ["ignore", "ignore", "pipe"]
@@ -569,11 +584,12 @@ function version(program, projectPath) {
 
 				switch (process.env.npm_lifecycle_event) {
 					case "version":
+						const filesToAdd = []
+							.concat(updateExpo ? [appJSONPath] : [])
+							.concat(updateNative ? [programOpts.android, programOpts.ios] : []);
 						child.spawnSync(
 							"git",
-							["add"].concat(
-								isExpoApp ? appJSONPath : [programOpts.android, programOpts.ios]
-							),
+							["add"].concat(filesToAdd),
 							gitCmdOpts
 						);
 
