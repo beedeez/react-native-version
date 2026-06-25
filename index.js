@@ -62,6 +62,110 @@ function getPlistFilenames(xcode) {
 }
 
 /**
+ * Returns Info.plist filenames by reading the raw project.pbxproj text.
+ * Used as a fallback when pbxproj-dom cannot parse the project (e.g. New
+ * Architecture / freshly regenerated projects), so the Info.plist build
+ * number can still be updated.
+ * @private
+ * @param {String} pbxprojPath Path to the project.pbxproj file
+ * @return {Array} Plist filenames
+ */
+function getPlistFilenamesFromPbxproj(pbxprojPath) {
+	const contents = fs.readFileSync(pbxprojPath, "utf8");
+	const matches = contents.match(/INFOPLIST_FILE = [^;]+;/g) || [];
+
+	return unique(
+		matches
+			.map(line =>
+				line
+					.replace(/^INFOPLIST_FILE = /, "")
+					.replace(/;$/, "")
+					.replace(/^"(.*)"$/, "$1")
+					.trim()
+			)
+			.filter(filename => /\.plist$/i.test(filename))
+	);
+}
+
+/**
+ * Updates CFBundleShortVersionString / CFBundleVersion in the given Info.plist
+ * files. Kept independent of pbxproj-dom so the shipped build number is always
+ * bumped, even when the Xcode project itself cannot be parsed.
+ * @private
+ * @param {Object} programOpts Program options
+ * @param {Object} appPkg Parsed package.json
+ * @param {Array} plistFilenames Info.plist paths relative to the ios folder
+ */
+function updatePlistBuildNumbers(programOpts, appPkg, plistFilenames) {
+	const plistFiles = plistFilenames.map(filename => {
+		return fs.readFileSync(
+			path.join(programOpts.ios, filename),
+			"utf8"
+		);
+	});
+
+	const parsedPlistFiles = plistFiles.map(file => {
+		return plist.parse(file);
+	});
+
+	parsedPlistFiles.forEach((json, index) => {
+		fs.writeFileSync(
+			path.join(programOpts.ios, plistFilenames[index]),
+			plist.build(
+				Object.assign(
+					{},
+					json,
+					!programOpts.incrementBuild
+						? {
+								CFBundleShortVersionString: getCFBundleShortVersionString(
+									appPkg.version
+								)
+						  }
+						: {},
+					!programOpts.neverIncrementBuild
+						? {
+								CFBundleVersion: getNewVersionCode(
+									programOpts,
+									parseInt(json.CFBundleVersion, 10),
+									appPkg.version,
+									programOpts.resetBuild
+								).toString()
+						  }
+						: {}
+				)
+			)
+		);
+	});
+
+	plistFilenames.forEach((filename, index) => {
+		const indent = detectIndent(plistFiles[index]);
+
+		fs.writeFileSync(
+			path.join(programOpts.ios, filename),
+			stripIndents`
+			<?xml version="1.0" encoding="UTF-8"?>
+			<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+			<plist version="1.0">` +
+				"\n" +
+				beautify(
+					fs
+						.readFileSync(path.join(programOpts.ios, filename), "utf8")
+						.match(/<dict>[\s\S]*<\/dict>/)[0],
+					Object.assign(
+						{ end_with_newline: true },
+						indent.type === "tab"
+							? { indent_with_tabs: true }
+							: { indent_size: indent.amount }
+					)
+				) +
+				stripIndents`
+			</plist>` +
+				"\n"
+		);
+	});
+}
+
+/**
  * Returns numerical version code for a given version name
  * @private
  * @return {Number} e.g. returns 1002003 for given version 1.2.3
@@ -406,106 +510,93 @@ function version(program, projectPath) {
 				}
 
 				const projectFolder = path.join(programOpts.ios, xcodeProjects[0]);
-				const xcode = Xcode.open(path.join(projectFolder, "project.pbxproj"));
-				const plistFilenames = getPlistFilenames(xcode);
+				const pbxprojPath = path.join(projectFolder, "project.pbxproj");
 
-				xcode.document.projects.forEach(project => {
-					!programOpts.neverIncrementBuild &&
-						project.targets.filter(Boolean).forEach(target => {
-							target.buildConfigurationsList.buildConfigurations.forEach(
-								config => {
-									if (target.name === appPkg.name) {
-										const CURRENT_PROJECT_VERSION = getNewVersionCode(
-											programOpts,
-											parseInt(
-												config.ast.value
-													.get("buildSettings")
-													.get("CURRENT_PROJECT_VERSION").text,
-												10
-											),
-											appPkg.version,
-											programOpts.resetBuild
-										);
+				// Opening the pbxproj via pbxproj-dom can fail on projects it does
+				// not fully understand (e.g. New Architecture / freshly regenerated
+				// projects). When that happens we still MUST update the Info.plist
+				// build number — that is what Xcode actually ships — so we degrade
+				// gracefully instead of silently skipping the whole iOS step.
+				let xcode = null;
 
-										config.patch({
-											buildSettings: {
-												CURRENT_PROJECT_VERSION
-											}
-										});
+				try {
+					xcode = Xcode.open(pbxprojPath);
+				} catch (err) {
+					log(
+						{
+							style: "yellow",
+							text:
+								"Could not parse " +
+								pbxprojPath +
+								" (" +
+								err.message +
+								"). Falling back to Info.plist-only versioning."
+						},
+						programOpts.quiet
+					);
+				}
+
+				const plistFilenames = xcode
+					? getPlistFilenames(xcode)
+					: getPlistFilenamesFromPbxproj(pbxprojPath);
+
+				if (!plistFilenames.length) {
+					throw new Error(
+						`No INFOPLIST_FILE entries found in "${pbxprojPath}"`
+					);
+				}
+
+				// Best-effort: bump CURRENT_PROJECT_VERSION in the pbxproj. This
+				// relies on the pbxproj-dom DOM, so it only runs when the project
+				// parsed cleanly and must never block the Info.plist update below.
+				if (xcode && !programOpts.neverIncrementBuild) {
+					try {
+						xcode.document.projects.forEach(project => {
+							project.targets.filter(Boolean).forEach(target => {
+								target.buildConfigurationsList.buildConfigurations.forEach(
+									config => {
+										if (target.name === appPkg.name) {
+											const CURRENT_PROJECT_VERSION = getNewVersionCode(
+												programOpts,
+												parseInt(
+													config.ast.value
+														.get("buildSettings")
+														.get("CURRENT_PROJECT_VERSION").text,
+													10
+												),
+												appPkg.version,
+												programOpts.resetBuild
+											);
+
+											config.patch({
+												buildSettings: {
+													CURRENT_PROJECT_VERSION
+												}
+											});
+										}
 									}
-								}
-							);
+								);
+							});
 						});
 
-					const plistFiles = plistFilenames.map(filename => {
-						return fs.readFileSync(
-							path.join(programOpts.ios, filename),
-							"utf8"
+						xcode.save();
+					} catch (err) {
+						log(
+							{
+								style: "yellow",
+								text:
+									"Could not update CURRENT_PROJECT_VERSION in the pbxproj (" +
+									err.message +
+									"). Info.plist build number was still updated."
+							},
+							programOpts.quiet
 						);
-					});
+					}
+				}
 
-					const parsedPlistFiles = plistFiles.map(file => {
-						return plist.parse(file);
-					});
-
-					parsedPlistFiles.forEach((json, index) => {
-						fs.writeFileSync(
-							path.join(programOpts.ios, plistFilenames[index]),
-							plist.build(
-								Object.assign(
-									{},
-									json,
-									!programOpts.incrementBuild
-										? {
-												CFBundleShortVersionString: getCFBundleShortVersionString(
-													appPkg.version
-												)
-										  }
-										: {},
-									!programOpts.neverIncrementBuild
-										? {
-												CFBundleVersion: getNewVersionCode(
-													programOpts,
-													parseInt(json.CFBundleVersion, 10),
-													appPkg.version,
-													programOpts.resetBuild
-												).toString()
-										  }
-										: {}
-								)
-							)
-						);
-					});
-
-					plistFilenames.forEach((filename, index) => {
-						const indent = detectIndent(plistFiles[index]);
-
-						fs.writeFileSync(
-							path.join(programOpts.ios, filename),
-							stripIndents`
-							<?xml version="1.0" encoding="UTF-8"?>
-							<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-							<plist version="1.0">` +
-								"\n" +
-								beautify(
-									fs
-										.readFileSync(path.join(programOpts.ios, filename), "utf8")
-										.match(/<dict>[\s\S]*<\/dict>/)[0],
-									Object.assign(
-										{ end_with_newline: true },
-										indent.type === "tab"
-											? { indent_with_tabs: true }
-											: { indent_size: indent.amount }
-									)
-								) +
-								stripIndents`
-							</plist>` +
-								"\n"
-						);
-					});
-				});
-
-				xcode.save();
+				// Always update the Info.plist build number — it is the source of
+				// truth for the shipped build and must not depend on pbxproj-dom.
+				updatePlistBuildNumbers(programOpts, appPkg, plistFilenames);
 			}
 
 			log({ text: "iOS updated" }, programOpts.quiet);
